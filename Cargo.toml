@@ -1,0 +1,14 @@
+[package]
+name = "atomic-bitmap"
+version = "0.1.0"
+edition = "2021"
+description = "A bitmap with atomic operations for concurrent systems."
+readme = "README.md"
+license = "BSD-2-Clause"
+repository = "https://github.com/00xc/atomic_bitmap"
+keywords = ["bitmap", "atomic", "concurrency", "concurrent"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
