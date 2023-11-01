@@ -631,7 +631,8 @@ impl<const N: usize> AtomicBitmap<N> {
 		}
 	}
 
-	/// Get the bitmap as an array of [`u64`]'s.
+	/// Get the bitmap as an array of [`u64`]'s without consuming the
+	/// bitmap.
 	///
 	/// # Safety
 	///
@@ -653,13 +654,13 @@ impl<const N: usize> AtomicBitmap<N> {
 	/// let map = AtomicBitmap::<8>::new(true);
 	///
 	/// // SAFETY: no concurrent writes are being made.
-	/// let inner = unsafe { map.into_inner() };
+	/// let inner = unsafe { map.get_inner() };
 	/// assert_eq!(inner, [u64::MAX; 8]);
 	///
 	/// // Convert back
 	/// let map = AtomicBitmap::from(inner);
 	/// ```
-	pub unsafe fn into_inner(&self) -> [u64; N] {
+	pub unsafe fn get_inner(&self) -> [u64; N] {
 		array::from_fn(|i| self.slots[i].load(Ordering::SeqCst))
 	}
 }
