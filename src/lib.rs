@@ -150,6 +150,25 @@ impl<const N: usize> AtomicBitmap<N> {
 		idx / Self::SLOT_BITS < N
 	}
 
+	/// Inverts the bit at the given index. Returns the previous value
+	/// of the bit, or [`None`] if the index is out of bounds.
+	///
+	/// # Example
+	///
+	/// ```rust
+	/// use atomic_bitmap::AtomicBitmap;
+	///
+	/// let map = AtomicBitmap::<1>::new(false);
+	/// assert_eq!(map.flip(4), Some(false));
+	/// assert_eq!(map.get(4), Some(true));
+	/// ```
+	pub fn flip(&self, idx: usize) -> Option<bool> {
+		let slot = self.slots.get(idx / Self::SLOT_BITS)?;
+		let mask = 1 << (idx & Self::SLOT_MASK);
+		let prev = slot.fetch_xor(mask, Ordering::SeqCst);
+		Some(prev & mask != 0)
+	}
+
 	/// Atomically swap two bits within the same 64-bit block. Returns
 	/// [`None`] if the bits are in different blocks or if at least
 	/// one of the indexes is out of bounds.
