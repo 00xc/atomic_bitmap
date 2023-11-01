@@ -801,7 +801,7 @@ mod loom_tests {
 	use super::*;
 
 	#[test]
-	fn test_loom() {
+	fn test_loom_lowest_zero_weak() {
 		use loom::sync::Arc;
 		use loom::thread;
 		const NTHREAD: usize = 2;
@@ -836,6 +836,38 @@ mod loom_tests {
 					.sum::<u64>(),
 				map.set_bits() as u64,
 			);
+		});
+	}
+
+	#[test]
+	fn test_loom_lowest_zero() {
+		use loom::sync::Arc;
+		use loom::thread;
+		const NTHREAD: usize = 2;
+
+		loom::model(|| {
+			let map = Arc::new(AtomicBitmap::<2>::new(false));
+			let values =
+				Arc::new(array::from_fn::<_, 128, _>(|_| {
+					AtomicU64::new(0)
+				}));
+
+			let ths: Vec<_> = (0..NTHREAD)
+				.map(|_| {
+					let map = map.clone();
+					let values = values.clone();
+					thread::spawn(move || {
+						let i = map.set_lowest_zero().unwrap();
+						values[i].fetch_add(1, Ordering::SeqCst);
+					})
+				})
+				.collect();
+
+			for th in ths {
+				th.join().unwrap();
+			}
+
+			assert_eq!(map.set_bits(), NTHREAD);
 		});
 	}
 }
