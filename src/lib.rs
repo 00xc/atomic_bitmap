@@ -480,7 +480,7 @@ impl<const N: usize> AtomicBitmap<N> {
 					// TODO: can this be Acquire?
 					Ordering::SeqCst,
 				) else {
-					// Success, return the set bit
+					// Success, return the cleared bit
 					return Some(i * Self::SLOT_BITS + bit);
 				};
 
