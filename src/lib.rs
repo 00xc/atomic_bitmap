@@ -207,7 +207,7 @@ impl<const N: usize> AtomicBitmap<N> {
 		let bit_b = b & Self::SLOT_MASK;
 		if bit_a == bit_b {
 			// Nothing to do
-			return Some(())
+			return Some(());
 		}
 
 		let mut value = slot.load(Ordering::Acquire);
@@ -221,7 +221,7 @@ impl<const N: usize> AtomicBitmap<N> {
 				// TODO: can this be Acquire?
 				Ordering::SeqCst,
 			) else {
-				return Some(())
+				return Some(());
 			};
 
 			value = cur;
