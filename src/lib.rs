@@ -622,25 +622,6 @@ impl<const N: usize> AtomicBitmap<N> {
 			.sum()
 	}
 
-	/// Reset all bits to the given value.
-	///
-	/// # Example
-	/// ```rust
-	/// use atomic_bitmap::AtomicBitmap;
-	///
-	/// let map = AtomicBitmap::<8>::new(true);
-	/// assert_eq!(map.get(0), Some(true));
-	///
-	/// map.reset(false);
-	/// assert_eq!(map.get(0), Some(false));
-	/// ```
-	pub fn reset(&self, val: bool) {
-		let val = if val { u64::MAX } else { 0 };
-		for slot in self.slots.iter() {
-			slot.store(val, Ordering::Release);
-		}
-	}
-
 	/// Get the bitmap as an array of [`u64`]'s, consuming the bitmap.
 	/// This is safe because passing self by value guarantees that no
 	/// other threads are concurrently accessing the atomic data.
@@ -683,6 +664,34 @@ impl<const N: usize> AtomicBitmap<N> {
 				let val = self.slots[i].load(Ordering::SeqCst);
 				AtomicU64::new(val)
 			}),
+		}
+	}
+
+	/// Reset all bits to the given value.
+	///
+	/// # Safety
+	///
+	/// Like [`AtomicBitmap::clone()`], this function is not fully
+	/// atomic if `N` > 1. In that case, the caller must guarantee
+	/// that no concurrent reads or writes are happening on the
+	/// bitmap, or that it is fine for the application to observe an
+	/// intermediate state where only some blocks have been reset.
+	///
+	/// # Example
+	/// ```rust
+	/// use atomic_bitmap::AtomicBitmap;
+	///
+	/// let map = AtomicBitmap::<8>::new(true);
+	/// assert_eq!(map.get(0), Some(true));
+	///
+	/// // SAFETY: no concurrent reads or writes are being made.
+	/// unsafe { map.reset(false) };
+	/// assert_eq!(map.get(0), Some(false));
+	/// ```
+	pub unsafe fn reset(&self, val: bool) {
+		let val = if val { u64::MAX } else { 0 };
+		for slot in self.slots.iter() {
+			slot.store(val, Ordering::Release);
 		}
 	}
 
