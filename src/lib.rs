@@ -215,8 +215,7 @@ impl<const N: usize> AtomicBitmap<N> {
 				value,
 				new,
 				Ordering::SeqCst,
-				// TODO: can this be Acquire?
-				Ordering::SeqCst,
+				Ordering::Relaxed,
 			) else {
 				return Some(());
 			};
@@ -379,8 +378,7 @@ impl<const N: usize> AtomicBitmap<N> {
 					value,
 					new,
 					Ordering::SeqCst,
-					// TODO: can this be Acquire?
-					Ordering::SeqCst,
+					Ordering::Relaxed,
 				) else {
 					// Success, return the set bit
 					return Some(i * Self::SLOT_BITS + bit);
@@ -496,8 +494,7 @@ impl<const N: usize> AtomicBitmap<N> {
 					value,
 					new,
 					Ordering::SeqCst,
-					// TODO: can this be Acquire?
-					Ordering::SeqCst,
+					Ordering::Relaxed,
 				) else {
 					// Success, return the cleared bit
 					return Some(i * Self::SLOT_BITS + bit);
