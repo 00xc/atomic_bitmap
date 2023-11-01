@@ -1,5 +1,42 @@
 #![cfg_attr(not(test), no_std)]
 
+//! A statically sized atomic bitmap for concurrent systems.
+//!
+//! This crate performs no heap allocations and uses `#[no_std]`.
+//!
+//! # Example
+//!
+//! ```rust
+//! use atomic_bitmap::AtomicBitmap;
+//!
+//! // A bitmap with 128 bits, all set to zero.
+//! let map = AtomicBitmap::<2>::new(false);
+//!
+//! // Setting a bit and getting its previous value
+//! assert_eq!(map.set(4, true), Some(false));
+//!
+//! // Setting an invalid bit
+//! assert_eq!(map.set(128, true), None);
+//!
+//! // Conditionally setting a bit
+//! assert_eq!(
+//!     map.compare_exchange(102, false, true),
+//!     Some(Ok(false)),
+//! );
+//!
+//! // Getting the value of a bit
+//! assert_eq!(map.get(4), Some(true));
+//!
+//! // Getting the value of an invalid bit
+//! assert_eq!(map.get(128), None);
+//!
+//! // Clearing the lowest set bit
+//! assert_eq!(map.clear_lowest_one(), Some(4));
+//!
+//! // Setting the lowest unset bit
+//! assert_eq!(map.set_lowest_zero(), Some(0));
+//! ```
+
 use core::array;
 use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicU64, Ordering};
