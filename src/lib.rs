@@ -607,6 +607,27 @@ impl<const N: usize> AtomicBitmap<N> {
 		}
 	}
 
+	/// Get the bitmap as an array of [`u64`]'s, consuming the bitmap.
+	/// This is safe because passing self by value guarantees that no
+	/// other threads are concurrently accessing the atomic data.
+	///
+	/// # Example
+	///
+	/// ```rust
+	/// use atomic_bitmap::AtomicBitmap;
+	///
+	/// let map = AtomicBitmap::<8>::new(true);
+	///
+	/// let inner = map.into_inner();
+	/// assert_eq!(inner, [u64::MAX; 8]);
+	///
+	/// // Convert back
+	/// let map = AtomicBitmap::from(inner);
+	/// ```
+	pub fn into_inner(self) -> [u64; N] {
+		self.slots.map(|s| s.into_inner())
+	}
+
 	/// Creates a copy of the bitmap.
 	///
 	/// # Safety
