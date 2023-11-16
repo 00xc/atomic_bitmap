@@ -1,13 +1,19 @@
 #![cfg_attr(not(test), no_std)]
 
-//! A statically sized atomic bitmap for concurrent systems.
+//! An atomic bitmap implementation for concurrent systems.
 //!
 //! This crate performs no heap allocations and uses `#[no_std]`.
+//!
+//! The core functionality is implementeted in the [`AtomicBitmap`]
+//! trait, The main type that implements this trait is
+//! [`FixedBitmap`], an implementation using fixed-size arrays.
+//! However, the trait is implemented for any type that can be
+//! represented as a slice of `AtomicU64`'s, like vectors.
 //!
 //! # Example
 //!
 //! ```rust
-//! use atomic_bitmap::FixedBitmap;
+//! use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 //!
 //! // A bitmap with 128 bits, all set to zero.
 //! let map = FixedBitmap::<2>::new(false);
@@ -41,43 +47,13 @@ use core::array;
 use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-/// A statically-sized atomic bitmap.
-///
-/// The bitmap is generic over the number of 64-bit blocks it holds
-/// (`N`). `N` is guaranteed to be greater than 0 at compile time:
-///
-/// ```compile_fail
-/// use atomic_bitmap::FixedBitmap;
-/// # // Miri does not properly run our compile-time assert.
-/// # #[cfg(miri)]
-/// # core::compile_error!("Miri");
-///
-/// // This will not build.
-/// let bitmap = FixedBitmap::<0>::new(true);
-/// ```
-#[derive(Debug)]
-pub struct FixedBitmap<const N: usize> {
-	slots: [AtomicU64; N],
-}
+const SLOT_BITS: usize = u64::BITS as usize;
+const SLOT_MASK: usize = SLOT_BITS - 1;
 
-impl<const N: usize> FixedBitmap<N> {
-	const SLOT_BITS: usize = u64::BITS as usize;
-	const SLOT_MASK: usize = Self::SLOT_BITS - 1;
-
-	// A hack to get a compile-time assertion
-	const SIZE_OK: () =
-		assert!(N > 0, "Cannot create an empty bitmap");
-
-	/// A new bitmap with all bits set to the specified value.
-	pub fn new(val: bool) -> Self {
-		#[allow(clippy::let_unit_value)]
-		let _ = Self::SIZE_OK;
-
-		let val = if val { u64::MAX } else { 0 };
-		Self {
-			slots: array::from_fn(|_| AtomicU64::new(val)),
-		}
-	}
+/// A trait implemented by all types that can act as an atomic bitmap.
+pub trait AtomicBitmap {
+	/// A slice of the inner representation.
+	fn slots(&self) -> &[AtomicU64];
 
 	/// Get the bit at the specified index, or [`None`] if the index
 	/// is out of bounds.
@@ -85,7 +61,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// # Example
 	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<2>::new(false);
 	///
@@ -95,28 +71,28 @@ impl<const N: usize> FixedBitmap<N> {
 	/// // Out of bounds
 	/// assert_eq!(map.get(128), None);
 	/// ```
-	pub fn get(&self, idx: usize) -> Option<bool> {
+	fn get(&self, idx: usize) -> Option<bool> {
 		let slot = self
-			.slots
-			.get(idx / Self::SLOT_BITS)?
+			.slots()
+			.get(idx / SLOT_BITS)?
 			.load(Ordering::Acquire);
-		let mask = 1 << (idx & Self::SLOT_MASK);
+		let mask = 1 << (idx & SLOT_MASK);
 		Some(slot & mask != 0)
 	}
 
-	/// Identical to [`FixedBitmap::get()`] but without any bounds
+	/// Identical to [`AtomicBitmap::get()`] but without any bounds
 	/// checking.
 	///
 	/// # Safety
 	///
 	/// The caller must guarantee that the index is within bounds of
 	/// the bitmap.
-	pub unsafe fn get_unchecked(&self, idx: usize) -> bool {
+	unsafe fn get_unchecked(&self, idx: usize) -> bool {
 		let slot = self
-			.slots
-			.get_unchecked(idx / Self::SLOT_BITS)
+			.slots()
+			.get_unchecked(idx / SLOT_BITS)
 			.load(Ordering::Acquire);
-		let mask = 1 << (idx & Self::SLOT_MASK);
+		let mask = 1 << (idx & SLOT_MASK);
 		slot & mask != 0
 	}
 
@@ -126,7 +102,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// # Example
 	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<2>::new(false);
 	///
@@ -136,9 +112,9 @@ impl<const N: usize> FixedBitmap<N> {
 	/// // Out of bounds
 	/// assert_eq!(map.set(128, true), None);
 	/// ```
-	pub fn set(&self, idx: usize, val: bool) -> Option<bool> {
-		let slot = self.slots.get(idx / Self::SLOT_BITS)?;
-		let mask = 1 << (idx & Self::SLOT_MASK);
+	fn set(&self, idx: usize, val: bool) -> Option<bool> {
+		let slot = self.slots().get(idx / SLOT_BITS)?;
+		let mask = 1 << (idx & SLOT_MASK);
 		let prev = if val {
 			slot.fetch_or(mask, Ordering::SeqCst)
 		} else {
@@ -147,20 +123,16 @@ impl<const N: usize> FixedBitmap<N> {
 		Some(prev & mask != 0)
 	}
 
-	/// Identical to [`FixedBitmap::set()`] but without any bounds
+	/// Identical to [`AtomicBitmap::set()`] but without any bounds
 	/// checking.
 	///
 	/// # Safety
 	///
 	/// The caller must guarantee that the index is within bounds of
 	/// the bitmap.
-	pub unsafe fn set_unchecked(
-		&self,
-		idx: usize,
-		val: bool,
-	) -> bool {
-		let slot = self.slots.get_unchecked(idx / Self::SLOT_BITS);
-		let mask = 1 << (idx & Self::SLOT_MASK);
+	unsafe fn set_unchecked(&self, idx: usize, val: bool) -> bool {
+		let slot = self.slots().get_unchecked(idx / SLOT_BITS);
+		let mask = 1 << (idx & SLOT_MASK);
 		let prev = if val {
 			slot.fetch_or(mask, Ordering::SeqCst)
 		} else {
@@ -175,7 +147,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// # Example
 	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<4>::new(false);
 	/// assert!(map.valid_index(64));
@@ -183,8 +155,8 @@ impl<const N: usize> FixedBitmap<N> {
 	/// assert!(map.valid_index(255));
 	/// assert!(!map.valid_index(256));
 	/// ```
-	pub const fn valid_index(&self, idx: usize) -> bool {
-		idx / Self::SLOT_BITS < N
+	fn valid_index(&self, idx: usize) -> bool {
+		idx / SLOT_BITS < self.slots().len()
 	}
 
 	/// Inverts the bit at the given index. Returns the previous value
@@ -193,15 +165,15 @@ impl<const N: usize> FixedBitmap<N> {
 	/// # Example
 	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<1>::new(false);
 	/// assert_eq!(map.flip(4), Some(false));
 	/// assert_eq!(map.get(4), Some(true));
 	/// ```
-	pub fn flip(&self, idx: usize) -> Option<bool> {
-		let slot = self.slots.get(idx / Self::SLOT_BITS)?;
-		let mask = 1 << (idx & Self::SLOT_MASK);
+	fn flip(&self, idx: usize) -> Option<bool> {
+		let slot = self.slots().get(idx / SLOT_BITS)?;
+		let mask = 1 << (idx & SLOT_MASK);
 		let prev = slot.fetch_xor(mask, Ordering::SeqCst);
 		Some(prev & mask != 0)
 	}
@@ -213,7 +185,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// # Example
 	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<2>::new(false);
 	///
@@ -228,17 +200,17 @@ impl<const N: usize> FixedBitmap<N> {
 	/// // Cannot swap bits in different 64-bit blocks.
 	/// assert_eq!(map.swap(4, 68), None);
 	/// ```
-	pub fn swap(&self, a: usize, b: usize) -> Option<()> {
-		let idx = a / Self::SLOT_BITS;
-		if idx != b / Self::SLOT_BITS {
+	fn swap(&self, a: usize, b: usize) -> Option<()> {
+		let idx = a / SLOT_BITS;
+		if idx != b / SLOT_BITS {
 			// Different block, cannot swap atomically
 			return None;
 		}
 
-		let slot = self.slots.get(idx)?;
+		let slot = self.slots().get(idx)?;
 
-		let bit_a = a & Self::SLOT_MASK;
-		let bit_b = b & Self::SLOT_MASK;
+		let bit_a = a & SLOT_MASK;
+		let bit_b = b & SLOT_MASK;
 		if bit_a == bit_b {
 			// Nothing to do
 			return Some(());
@@ -273,7 +245,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// # Example
 	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<4>::new(false);
 	///
@@ -292,14 +264,14 @@ impl<const N: usize> FixedBitmap<N> {
 	/// // Out of bounds
 	/// assert_eq!(map.compare_exchange(257, false, true), None);
 	/// ```
-	pub fn compare_exchange(
+	fn compare_exchange(
 		&self,
 		idx: usize,
 		current: bool,
 		new: bool,
 	) -> Option<Result<bool, bool>> {
-		let slot = self.slots.get(idx / Self::SLOT_BITS)?;
-		let mask = 1 << (idx & Self::SLOT_MASK);
+		let slot = self.slots().get(idx / SLOT_BITS)?;
+		let mask = 1 << (idx & SLOT_MASK);
 		let value = slot.load(Ordering::Acquire);
 
 		let cur = if current { value | mask } else { value & !mask };
@@ -317,20 +289,20 @@ impl<const N: usize> FixedBitmap<N> {
 		)
 	}
 
-	/// Identical to [`FixedBitmap::compare_exchange()`], except the
+	/// Identical to [`AtomicBitmap::compare_exchange()`], except the
 	/// function is allowed to fail spuriously (e.g. for another
 	/// reason other than the ones listed in for `compare_exchange`).
 	/// Check the documentation for
 	/// [`AtomicU64::compare_exchange_weak()`] for a more complete
 	/// explaination.
-	pub fn compare_exchange_weak(
+	fn compare_exchange_weak(
 		&self,
 		idx: usize,
 		current: bool,
 		new: bool,
 	) -> Option<Result<bool, bool>> {
-		let slot = self.slots.get(idx / Self::SLOT_BITS)?;
-		let mask = 1 << (idx & Self::SLOT_MASK);
+		let slot = self.slots().get(idx / SLOT_BITS)?;
+		let mask = 1 << (idx & SLOT_MASK);
 		let value = slot.load(Ordering::Acquire);
 
 		let cur = if current { value | mask } else { value & !mask };
@@ -354,7 +326,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// # Example
 	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<4>::new(true);
 	/// assert_eq!(map.lowest_zero(), None);
@@ -367,12 +339,12 @@ impl<const N: usize> FixedBitmap<N> {
 	/// map.set(4, false).unwrap();
 	/// assert_eq!(map.lowest_zero(), Some(4));
 	/// ```
-	pub fn lowest_zero(&self) -> Option<usize> {
-		for (i, slot) in self.slots.iter().enumerate() {
+	fn lowest_zero(&self) -> Option<usize> {
+		for (i, slot) in self.slots().iter().enumerate() {
 			let bit =
 				slot.load(Ordering::Acquire).trailing_ones() as usize;
-			if bit < Self::SLOT_BITS {
-				return Some(i * Self::SLOT_BITS + bit);
+			if bit < SLOT_BITS {
+				return Some(i * SLOT_BITS + bit);
 			}
 		}
 		None
@@ -385,7 +357,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// # Example
 	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<4>::new(true);
 	///
@@ -399,13 +371,13 @@ impl<const N: usize> FixedBitmap<N> {
 	/// // No zero bits left
 	/// assert_eq!(map.set_lowest_zero(), None);
 	/// ```
-	pub fn set_lowest_zero(&self) -> Option<usize> {
-		for (i, slot) in self.slots.iter().enumerate() {
+	fn set_lowest_zero(&self) -> Option<usize> {
+		for (i, slot) in self.slots().iter().enumerate() {
 			let mut value = slot.load(Ordering::Acquire);
 
 			loop {
 				let bit = value.trailing_ones() as usize;
-				if bit >= Self::SLOT_BITS {
+				if bit >= SLOT_BITS {
 					// Slot is full, go on to the next one.
 					break;
 				}
@@ -418,7 +390,7 @@ impl<const N: usize> FixedBitmap<N> {
 					Ordering::Relaxed,
 				) else {
 					// Success, return the set bit
-					return Some(i * Self::SLOT_BITS + bit);
+					return Some(i * SLOT_BITS + bit);
 				};
 
 				value = cur;
@@ -428,7 +400,7 @@ impl<const N: usize> FixedBitmap<N> {
 		None
 	}
 
-	/// Similarly to [`FixedBitmap::set_lowest_zero()`], atomically
+	/// Similarly to [`AtomicBitmap::set_lowest_zero()`], atomically
 	/// finds the lowest bit set to zero and sets it to one. The main
 	/// difference is that this function only tries to set an unset
 	/// bit in each slot once, which might skip over unset bits in
@@ -436,11 +408,11 @@ impl<const N: usize> FixedBitmap<N> {
 	/// function has better performance, but it might not find an
 	/// unset bit in some cases (returning [`None`]), or the found
 	/// bit might not be the lowest available.
-	pub fn set_lowest_zero_weak(&self) -> Option<usize> {
-		for (i, slot) in self.slots.iter().enumerate() {
+	fn set_lowest_zero_weak(&self) -> Option<usize> {
+		for (i, slot) in self.slots().iter().enumerate() {
 			let value = slot.load(Ordering::Acquire);
 			let bit = value.trailing_ones() as usize;
-			if bit >= Self::SLOT_BITS {
+			if bit >= SLOT_BITS {
 				continue;
 			}
 			let new = value | (1 << bit);
@@ -457,7 +429,7 @@ impl<const N: usize> FixedBitmap<N> {
 				)
 				.is_ok()
 			{
-				return Some(i * Self::SLOT_BITS + bit);
+				return Some(i * SLOT_BITS + bit);
 			}
 		}
 
@@ -470,7 +442,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// # Example
 	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<4>::new(false);
 	/// assert_eq!(map.lowest_one(), None);
@@ -483,12 +455,12 @@ impl<const N: usize> FixedBitmap<N> {
 	/// map.set(4, true).unwrap();
 	/// assert_eq!(map.lowest_one(), Some(4));
 	/// ```
-	pub fn lowest_one(&self) -> Option<usize> {
-		for (i, slot) in self.slots.iter().enumerate() {
+	fn lowest_one(&self) -> Option<usize> {
+		for (i, slot) in self.slots().iter().enumerate() {
 			let bit = slot.load(Ordering::Acquire).trailing_zeros()
 				as usize;
-			if bit < Self::SLOT_BITS {
-				return Some(i * Self::SLOT_BITS + bit);
+			if bit < SLOT_BITS {
+				return Some(i * SLOT_BITS + bit);
 			}
 		}
 		None
@@ -501,7 +473,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// # Example
 	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<4>::new(false);
 	///
@@ -515,13 +487,13 @@ impl<const N: usize> FixedBitmap<N> {
 	/// // No set bits left
 	/// assert_eq!(map.clear_lowest_one(), None);
 	/// ```
-	pub fn clear_lowest_one(&self) -> Option<usize> {
-		for (i, slot) in self.slots.iter().enumerate() {
+	fn clear_lowest_one(&self) -> Option<usize> {
+		for (i, slot) in self.slots().iter().enumerate() {
 			let mut value = slot.load(Ordering::Acquire);
 
 			loop {
 				let bit = value.trailing_zeros() as usize;
-				if bit >= Self::SLOT_BITS {
+				if bit >= SLOT_BITS {
 					// Slot is full, go on to the next one.
 					break;
 				}
@@ -534,7 +506,7 @@ impl<const N: usize> FixedBitmap<N> {
 					Ordering::Relaxed,
 				) else {
 					// Success, return the cleared bit
-					return Some(i * Self::SLOT_BITS + bit);
+					return Some(i * SLOT_BITS + bit);
 				};
 
 				value = cur;
@@ -544,7 +516,7 @@ impl<const N: usize> FixedBitmap<N> {
 		None
 	}
 
-	/// Similarly to [`FixedBitmap::clear_lowest_one()`], atomically
+	/// Similarly to [`AtomicBitmap::clear_lowest_one()`], atomically
 	/// finds the lowest bit set to one and sets it to zero. The main
 	/// difference is that this function only tries to set a set bit
 	/// in each slot once, which might skip over set bits in case
@@ -552,11 +524,11 @@ impl<const N: usize> FixedBitmap<N> {
 	/// function has better performance, but it might not find a set
 	/// bit in some cases (returning [`None`]), or the found bit
 	/// might not be the lowest available.
-	pub fn clear_lowest_one_weak(&self) -> Option<usize> {
-		for (i, slot) in self.slots.iter().enumerate() {
+	fn clear_lowest_one_weak(&self) -> Option<usize> {
+		for (i, slot) in self.slots().iter().enumerate() {
 			let value = slot.load(Ordering::Acquire);
 			let bit = value.trailing_zeros() as usize;
-			if bit >= Self::SLOT_BITS {
+			if bit >= SLOT_BITS {
 				continue;
 			}
 			let new = value & !(1 << bit);
@@ -573,29 +545,11 @@ impl<const N: usize> FixedBitmap<N> {
 				)
 				.is_ok()
 			{
-				return Some(i * Self::SLOT_BITS + bit);
+				return Some(i * SLOT_BITS + bit);
 			}
 		}
 
 		None
-	}
-
-	/// The total number of bits that this bitmap can hold.
-	///
-	/// # Example
-	///
-	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
-	///
-	/// let map = FixedBitmap::<4>::new(true);
-	/// assert_eq!(map.capacity().get(), 64 * 4);
-	/// ```
-	pub const fn capacity(&self) -> NonZeroUsize {
-		// This is safe because `N` is guaranteed to be greater than
-		// zero at compile time. The multiplication can only wrap
-		// into zero if `N` is a huge number, at which point no system
-		// will have the memory to hold such a bitmap.
-		unsafe { NonZeroUsize::new_unchecked(Self::SLOT_BITS * N) }
 	}
 
 	/// Count the number of bits set to 1. This is not guaranteed to
@@ -606,7 +560,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// # Example
 	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<1>::new(true);
 	/// assert_eq!(map.set_bits(), 64);
@@ -615,32 +569,75 @@ impl<const N: usize> FixedBitmap<N> {
 	/// map.set(4, false);
 	/// assert_eq!(map.set_bits(), 63);
 	/// ```
-	pub fn set_bits(&self) -> usize {
-		self.slots
+	fn set_bits(&self) -> usize {
+		self.slots()
 			.iter()
 			.map(|c| c.load(Ordering::Acquire).count_ones() as usize)
 			.sum()
 	}
 
-	/// Get the bitmap as an array of [`u64`]'s, consuming the bitmap.
-	/// This is safe because passing self by value guarantees that no
-	/// other threads are concurrently accessing the atomic data.
+	/// Reset all bits to the given value.
+	///
+	/// # Safety
+	///
+	/// This function is not fully atomic if there is more than one
+	/// slot. In that case, the caller must guarantee that no
+	/// concurrent reads or writes are happening on the bitmap, or
+	/// that it is fine for the application to observe an
+	/// intermediate state where only some blocks have been reset.
 	///
 	/// # Example
-	///
 	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
+	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
 	///
 	/// let map = FixedBitmap::<8>::new(true);
+	/// assert_eq!(map.get(0), Some(true));
 	///
-	/// let inner = map.into_inner();
-	/// assert_eq!(inner, [u64::MAX; 8]);
-	///
-	/// // Convert back
-	/// let map = FixedBitmap::from(inner);
+	/// // SAFETY: no concurrent reads or writes are being made.
+	/// unsafe { map.reset(false) };
+	/// assert_eq!(map.get(0), Some(false));
 	/// ```
-	pub fn into_inner(self) -> [u64; N] {
-		self.slots.map(|s| s.into_inner())
+	unsafe fn reset(&self, val: bool) {
+		let val = if val { u64::MAX } else { 0 };
+		for slot in self.slots().iter() {
+			slot.store(val, Ordering::Release);
+		}
+	}
+}
+
+/// A statically-sized atomic bitmap with a guaranteed non-zero
+/// capacity.
+///
+/// The non-zero capacity guarantee is enforced at compile time:
+///
+/// ```compile_fail
+/// use atomic_bitmap::FixedBitmap;
+/// # // Miri does not properly run our compile-time assert.
+/// # #[cfg(miri)]
+/// # core::compile_error!("Miri");
+///
+/// // This will not build.
+/// let bitmap = FixedBitmap::<0>::new(true);
+/// ```
+#[derive(Debug)]
+pub struct FixedBitmap<const N: usize> {
+	slots: [AtomicU64; N],
+}
+
+impl<const N: usize> FixedBitmap<N> {
+	// A hack to get a compile-time assertion
+	const SIZE_OK: () =
+		assert!(N > 0, "Cannot create an empty bitmap");
+
+	/// A new bitmap with all bits set to the specified value.
+	pub fn new(val: bool) -> Self {
+		#[allow(clippy::let_unit_value)]
+		let _ = Self::SIZE_OK;
+
+		let val = if val { u64::MAX } else { 0 };
+		Self {
+			slots: array::from_fn(|_| AtomicU64::new(val)),
+		}
 	}
 
 	/// Creates a copy of the bitmap.
@@ -664,34 +661,6 @@ impl<const N: usize> FixedBitmap<N> {
 				let val = self.slots[i].load(Ordering::SeqCst);
 				AtomicU64::new(val)
 			}),
-		}
-	}
-
-	/// Reset all bits to the given value.
-	///
-	/// # Safety
-	///
-	/// Like [`FixedBitmap::clone()`], this function is not fully
-	/// atomic if `N` > 1. In that case, the caller must guarantee
-	/// that no concurrent reads or writes are happening on the
-	/// bitmap, or that it is fine for the application to observe an
-	/// intermediate state where only some blocks have been reset.
-	///
-	/// # Example
-	/// ```rust
-	/// use atomic_bitmap::FixedBitmap;
-	///
-	/// let map = FixedBitmap::<8>::new(true);
-	/// assert_eq!(map.get(0), Some(true));
-	///
-	/// // SAFETY: no concurrent reads or writes are being made.
-	/// unsafe { map.reset(false) };
-	/// assert_eq!(map.get(0), Some(false));
-	/// ```
-	pub unsafe fn reset(&self, val: bool) {
-		let val = if val { u64::MAX } else { 0 };
-		for slot in self.slots.iter() {
-			slot.store(val, Ordering::Release);
 		}
 	}
 
@@ -726,6 +695,51 @@ impl<const N: usize> FixedBitmap<N> {
 	/// ```
 	pub unsafe fn get_inner(&self) -> [u64; N] {
 		array::from_fn(|i| self.slots[i].load(Ordering::SeqCst))
+	}
+
+	/// Get the bitmap as an array of [`u64`]'s, consuming the bitmap.
+	/// This is safe because passing self by value guarantees that no
+	/// other threads are concurrently accessing the atomic data.
+	///
+	/// # Example
+	///
+	/// ```rust
+	/// use atomic_bitmap::FixedBitmap;
+	///
+	/// let map = FixedBitmap::<8>::new(true);
+	///
+	/// let inner = map.into_inner();
+	/// assert_eq!(inner, [u64::MAX; 8]);
+	///
+	/// // Convert back
+	/// let map = FixedBitmap::from(inner);
+	/// ```
+	pub fn into_inner(self) -> [u64; N] {
+		self.slots.map(|s| s.into_inner())
+	}
+
+	/// The total number of bits that this bitmap can hold.
+	///
+	/// # Example
+	///
+	/// ```rust
+	/// use atomic_bitmap::FixedBitmap;
+	///
+	/// let map = FixedBitmap::<4>::new(true);
+	/// assert_eq!(map.capacity().get(), 64 * 4);
+	/// ```
+	pub const fn capacity(&self) -> NonZeroUsize {
+		// This is safe because `N` is guaranteed to be greater than
+		// zero at compile time. The multiplication can only wrap
+		// into zero if `N` is a huge number, at which point no system
+		// will have the memory to hold such a bitmap.
+		unsafe { NonZeroUsize::new_unchecked(SLOT_BITS * N) }
+	}
+}
+
+impl<const N: usize> AtomicBitmap for FixedBitmap<N> {
+	fn slots(&self) -> &[AtomicU64] {
+		&self.slots
 	}
 }
 
@@ -774,6 +788,15 @@ impl<const N: usize> Default for FixedBitmap<N> {
 	/// A new bitmap with all bits set to zero.
 	fn default() -> Self {
 		Self::new(false)
+	}
+}
+
+impl<T> AtomicBitmap for T
+where
+	T: AsRef<[AtomicU64]>
+{
+	fn slots(&self) -> &[AtomicU64] {
+		self.as_ref()
 	}
 }
 
