@@ -793,7 +793,7 @@ impl<const N: usize> Default for FixedBitmap<N> {
 
 impl<T> AtomicBitmap for T
 where
-	T: AsRef<[AtomicU64]>
+	T: AsRef<[AtomicU64]>,
 {
 	fn slots(&self) -> &[AtomicU64] {
 		self.as_ref()
