@@ -857,4 +857,31 @@ mod tests {
 		bm.set(67, false).unwrap();
 		assert_eq!(bm.set_bits(), 8 * 64 - 1);
 	}
+
+	#[test]
+	fn lowest_zero_thread() {
+		use std::thread;
+		const NTHREAD: usize = 8;
+		const PERTHREAD: usize = 16;
+		const NUM_BITS_SET: usize = NTHREAD * PERTHREAD;
+
+		let bm = FixedBitmap::<8>::new(false);
+		let cap = bm.capacity().get();
+		thread::scope(|s| {
+			for _ in 0..NTHREAD {
+				s.spawn(|| {
+					for _ in 0..PERTHREAD {
+						bm.set_lowest_zero();
+					}
+				});
+			}
+		});
+
+		for i in 0..NUM_BITS_SET {
+			assert_eq!(bm.get(i), Some(true));
+		}
+		for i in NUM_BITS_SET..cap {
+			assert_eq!(bm.get(i), Some(false));
+		}
+	}
 }
