@@ -14,33 +14,36 @@
 //!
 //! ```rust
 //! use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+//! use core::sync::atomic::Ordering::*;
 //!
-//! // A bitmap with 128 bits, all set to zero.
+//! // A bitmap with 128 bits, all set to 0.
 //! let map = FixedBitmap::<2>::new(false);
 //!
 //! // Setting a bit and getting its previous value
-//! assert_eq!(map.set(4, true), Some(false));
+//! assert_eq!(map.set(4, true, Relaxed), Some(false));
 //!
 //! // Setting an invalid bit
-//! assert_eq!(map.set(128, true), None);
+//! assert_eq!(map.set(128, true, Relaxed), None);
 //!
 //! // Conditionally setting a bit
 //! assert_eq!(
-//!     map.compare_exchange(102, false, true),
-//!     Some(Ok(false)),
+//! 	map.compare_exchange(
+//! 		102, false, true, Relaxed, Relaxed, Relaxed
+//! 	),
+//! 	Some(Ok(false)),
 //! );
 //!
 //! // Getting the value of a bit
-//! assert_eq!(map.get(4), Some(true));
+//! assert_eq!(map.get(4, Relaxed), Some(true));
 //!
 //! // Getting the value of an invalid bit
-//! assert_eq!(map.get(128), None);
+//! assert_eq!(map.get(128, Relaxed), None);
 //!
 //! // Clearing the lowest set bit
-//! assert_eq!(map.clear_lowest_one(), Some(4));
+//! assert_eq!(map.clear_lowest_one(Relaxed, Relaxed), Some(4));
 //!
 //! // Setting the lowest unset bit
-//! assert_eq!(map.set_lowest_zero(), Some(0));
+//! assert_eq!(map.set_lowest_zero(Relaxed, Relaxed), Some(0));
 //! ```
 
 use core::array;
@@ -55,27 +58,25 @@ pub trait AtomicBitmap {
 	/// A slice of the inner representation.
 	fn slots(&self) -> &[AtomicU64];
 
-	/// Get the bit at the specified index, or [`None`] if the index
-	/// is out of bounds.
+	/// Get the bit at the specified index given a memory ordering, or
+	/// [`None`] if the index is out of bounds.
 	///
 	/// # Example
 	///
 	/// ```rust
 	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<2>::new(false);
 	///
 	/// // Within bounds
-	/// assert_eq!(map.get(64), Some(false));
+	/// assert_eq!(map.get(64, Relaxed), Some(false));
 	///
 	/// // Out of bounds
-	/// assert_eq!(map.get(128), None);
+	/// assert_eq!(map.get(128, Relaxed), None);
 	/// ```
-	fn get(&self, idx: usize) -> Option<bool> {
-		let slot = self
-			.slots()
-			.get(idx / SLOT_BITS)?
-			.load(Ordering::Acquire);
+	fn get(&self, idx: usize, order: Ordering) -> Option<bool> {
+		let slot = self.slots().get(idx / SLOT_BITS)?.load(order);
 		let mask = 1 << (idx & SLOT_MASK);
 		Some(slot & mask != 0)
 	}
@@ -87,11 +88,13 @@ pub trait AtomicBitmap {
 	///
 	/// The caller must guarantee that the index is within bounds of
 	/// the bitmap.
-	unsafe fn get_unchecked(&self, idx: usize) -> bool {
-		let slot = self
-			.slots()
-			.get_unchecked(idx / SLOT_BITS)
-			.load(Ordering::Acquire);
+	unsafe fn get_unchecked(
+		&self,
+		idx: usize,
+		order: Ordering,
+	) -> bool {
+		let slot =
+			self.slots().get_unchecked(idx / SLOT_BITS).load(order);
 		let mask = 1 << (idx & SLOT_MASK);
 		slot & mask != 0
 	}
@@ -99,26 +102,36 @@ pub trait AtomicBitmap {
 	/// Sets the specified bit to the given value and return the
 	/// previous value, or [`None`] if the index is out of bounds.
 	///
+	/// The memory ordering corresponds to that of
+	/// [`fetch_or()`](AtomicU64::fetch_or) and
+	/// [`fetch_and()`]((AtomicU64::fetch_and).
+	///
 	/// # Example
 	///
 	/// ```rust
 	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<2>::new(false);
 	///
 	/// // Within bounds
-	/// assert_eq!(map.set(64, true), Some(false));
+	/// assert_eq!(map.set(64, true, Relaxed), Some(false));
 	///
 	/// // Out of bounds
-	/// assert_eq!(map.set(128, true), None);
+	/// assert_eq!(map.set(128, true, Relaxed), None);
 	/// ```
-	fn set(&self, idx: usize, val: bool) -> Option<bool> {
+	fn set(
+		&self,
+		idx: usize,
+		val: bool,
+		order: Ordering,
+	) -> Option<bool> {
 		let slot = self.slots().get(idx / SLOT_BITS)?;
 		let mask = 1 << (idx & SLOT_MASK);
 		let prev = if val {
-			slot.fetch_or(mask, Ordering::SeqCst)
+			slot.fetch_or(mask, order)
 		} else {
-			slot.fetch_and(!mask, Ordering::SeqCst)
+			slot.fetch_and(!mask, order)
 		};
 		Some(prev & mask != 0)
 	}
@@ -130,13 +143,18 @@ pub trait AtomicBitmap {
 	///
 	/// The caller must guarantee that the index is within bounds of
 	/// the bitmap.
-	unsafe fn set_unchecked(&self, idx: usize, val: bool) -> bool {
+	unsafe fn set_unchecked(
+		&self,
+		idx: usize,
+		val: bool,
+		order: Ordering,
+	) -> bool {
 		let slot = self.slots().get_unchecked(idx / SLOT_BITS);
 		let mask = 1 << (idx & SLOT_MASK);
 		let prev = if val {
-			slot.fetch_or(mask, Ordering::SeqCst)
+			slot.fetch_or(mask, order)
 		} else {
-			slot.fetch_and(!mask, Ordering::SeqCst)
+			slot.fetch_and(!mask, order)
 		};
 		prev & mask != 0
 	}
@@ -162,19 +180,23 @@ pub trait AtomicBitmap {
 	/// Inverts the bit at the given index. Returns the previous value
 	/// of the bit, or [`None`] if the index is out of bounds.
 	///
+	/// The memory ordering corresponds to that of
+	/// [`fetch_xor()`](AtomicU64::fetch_xor) and
+	///
 	/// # Example
 	///
 	/// ```rust
 	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<1>::new(false);
-	/// assert_eq!(map.flip(4), Some(false));
-	/// assert_eq!(map.get(4), Some(true));
+	/// assert_eq!(map.flip(4, Relaxed), Some(false));
+	/// assert_eq!(map.get(4, Relaxed), Some(true));
 	/// ```
-	fn flip(&self, idx: usize) -> Option<bool> {
+	fn flip(&self, idx: usize, order: Ordering) -> Option<bool> {
 		let slot = self.slots().get(idx / SLOT_BITS)?;
 		let mask = 1 << (idx & SLOT_MASK);
-		let prev = slot.fetch_xor(mask, Ordering::SeqCst);
+		let prev = slot.fetch_xor(mask, order);
 		Some(prev & mask != 0)
 	}
 
@@ -182,25 +204,37 @@ pub trait AtomicBitmap {
 	/// [`None`] if the bits are in different blocks or if at least
 	/// one of the indexes is out of bounds.
 	///
+	/// `order_a` corresponds to the ordering for the first load of
+	/// the 64-bit block. `order_b` corresponds to the ordering for
+	/// the successful compare-exchange of the block with the bits
+	/// swapped.
+	///
 	/// # Example
 	///
 	/// ```rust
 	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<2>::new(false);
 	///
 	/// // Set some bit to 1, then swap it
-	/// map.set(62, true).unwrap();
-	/// map.swap(4, 62).unwrap();
+	/// map.set(62, true, Relaxed).unwrap();
+	/// map.swap(4, 62, Relaxed, Relaxed).unwrap();
 	///
-	/// assert_eq!(map.get(62), Some(false));
-	/// assert_eq!(map.get(4), Some(true));
-	/// assert_eq!(map.set_bits(), 1);
+	/// assert_eq!(map.get(62, Relaxed), Some(false));
+	/// assert_eq!(map.get(4, Relaxed), Some(true));
+	/// assert_eq!(map.set_bits(Relaxed), 1);
 	///
 	/// // Cannot swap bits in different 64-bit blocks.
-	/// assert_eq!(map.swap(4, 68), None);
+	/// assert_eq!(map.swap(4, 68, Relaxed, Relaxed), None);
 	/// ```
-	fn swap(&self, a: usize, b: usize) -> Option<()> {
+	fn swap(
+		&self,
+		a: usize,
+		b: usize,
+		order_a: Ordering,
+		order_b: Ordering,
+	) -> Option<()> {
 		let idx = a / SLOT_BITS;
 		if idx != b / SLOT_BITS {
 			// Different block, cannot swap atomically
@@ -216,14 +250,14 @@ pub trait AtomicBitmap {
 			return Some(());
 		}
 
-		let mut value = slot.load(Ordering::Acquire);
+		let mut value = slot.load(order_a);
 		loop {
 			let tmp = (value >> bit_a) ^ (value >> bit_b) & 1;
 			let new = value ^ ((tmp << bit_a) | (tmp << bit_b));
 			let Err(cur) = slot.compare_exchange_weak(
 				value,
 				new,
-				Ordering::SeqCst,
+				order_b,
 				Ordering::Relaxed,
 			) else {
 				return Some(());
@@ -242,50 +276,62 @@ pub trait AtomicBitmap {
 	/// `current`, or if another thread modified different bit in the
 	/// same block during the operation.
 	///
+	/// `load_order` corresponds to the first load of the 64-bit
+	/// block. `success` and `failure` correspond to the orderings
+	/// of [`compare_exchange()`](AtomicU64::compare_exchange).
+	///
 	/// # Example
 	///
 	/// ```rust
 	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<4>::new(false);
 	///
 	/// // Swap success, bit was 0, now it's 1
 	/// assert_eq!(
-	///     map.compare_exchange(42, false, true),
-	///     Some(Ok(false))
+	/// 	map.compare_exchange(
+	/// 		42, false, true, Relaxed, Relaxed, Relaxed
+	/// 	),
+	/// 	Some(Ok(false))
 	/// );
 	///
 	/// // Swap failure, bit was 1
 	/// assert_eq!(
-	///     map.compare_exchange(42, false, true),
-	///     Some(Err(true))
+	/// 	map.compare_exchange(
+	/// 		42, false, true, Relaxed, Relaxed, Relaxed
+	/// 	),
+	/// 	Some(Err(true))
 	/// );
 	///
 	/// // Out of bounds
-	/// assert_eq!(map.compare_exchange(257, false, true), None);
+	/// assert_eq!(
+	/// 	map.compare_exchange(
+	/// 		257, false, true, Relaxed, Relaxed, Relaxed
+	/// 	),
+	/// 	None
+	/// );
 	/// ```
 	fn compare_exchange(
 		&self,
 		idx: usize,
 		current: bool,
 		new: bool,
+		load_order: Ordering,
+		success: Ordering,
+		failure: Ordering,
 	) -> Option<Result<bool, bool>> {
 		let slot = self.slots().get(idx / SLOT_BITS)?;
 		let mask = 1 << (idx & SLOT_MASK);
-		let value = slot.load(Ordering::Acquire);
+		let value = slot.load(load_order);
 
 		let cur = if current { value | mask } else { value & !mask };
 		let new = if new { value | mask } else { value & !mask };
 
 		Some(
-			slot.compare_exchange(
-				cur,
-				new,
-				Ordering::SeqCst,
-				Ordering::SeqCst,
-			)
-			.map(|val| val & mask != 0)
-			.map_err(|val| val & mask != 0),
+			slot.compare_exchange(cur, new, success, failure)
+				.map(|val| val & mask != 0)
+				.map_err(|val| val & mask != 0),
 		)
 	}
 
@@ -300,49 +346,50 @@ pub trait AtomicBitmap {
 		idx: usize,
 		current: bool,
 		new: bool,
+		load_order: Ordering,
+		success: Ordering,
+		failure: Ordering,
 	) -> Option<Result<bool, bool>> {
 		let slot = self.slots().get(idx / SLOT_BITS)?;
 		let mask = 1 << (idx & SLOT_MASK);
-		let value = slot.load(Ordering::Acquire);
+		let value = slot.load(load_order);
 
 		let cur = if current { value | mask } else { value & !mask };
 		let new = if new { value | mask } else { value & !mask };
 
 		Some(
-			slot.compare_exchange_weak(
-				cur,
-				new,
-				Ordering::SeqCst,
-				Ordering::SeqCst,
-			)
-			.map(|val| val & mask != 0)
-			.map_err(|val| val & mask != 0),
+			slot.compare_exchange_weak(cur, new, success, failure)
+				.map(|val| val & mask != 0)
+				.map_err(|val| val & mask != 0),
 		)
 	}
 
 	/// Atomically gets the index of the lowest zero bit in the
 	/// bitmap, or [`None`] if all the bits are set.
 	///
+	/// `order` specifies the memory ordering when loading each
+	/// 64-bit block.
+	///
 	/// # Example
 	///
 	/// ```rust
 	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<4>::new(true);
-	/// assert_eq!(map.lowest_zero(), None);
+	/// assert_eq!(map.lowest_zero(Relaxed), None);
 	///
-	/// // Set some bit to zero
-	/// map.set(60, false).unwrap();
-	/// assert_eq!(map.lowest_zero(), Some(60));
+	/// // Set some bit to 0
+	/// map.set(60, false, Relaxed).unwrap();
+	/// assert_eq!(map.lowest_zero(Relaxed), Some(60));
 	///
-	/// // Set a lower bit to zero
-	/// map.set(4, false).unwrap();
-	/// assert_eq!(map.lowest_zero(), Some(4));
+	/// // Set a lower bit to 0
+	/// map.set(4, false, Relaxed).unwrap();
+	/// assert_eq!(map.lowest_zero(Relaxed), Some(4));
 	/// ```
-	fn lowest_zero(&self) -> Option<usize> {
+	fn lowest_zero(&self, order: Ordering) -> Option<usize> {
 		for (i, slot) in self.slots().iter().enumerate() {
-			let bit =
-				slot.load(Ordering::Acquire).trailing_ones() as usize;
+			let bit = slot.load(order).trailing_ones() as usize;
 			if bit < SLOT_BITS {
 				return Some(i * SLOT_BITS + bit);
 			}
@@ -350,30 +397,40 @@ pub trait AtomicBitmap {
 		None
 	}
 
-	/// Atomically finds the lowest bit set to zero and sets it to
+	/// Atomically finds the lowest bit set to 0 and sets it to
 	/// one. Returns the index of that bit, or [`None`] if all the
 	/// bits are set.
+	///
+	/// `order_a` corresponds to the ordering for the first load of
+	/// the 64-bit block. `order_b` corresponds to the ordering for
+	/// the successful [compare-exchange](AtomicU64::compare_exchange)
+	/// of the block with the bit set.
 	///
 	/// # Example
 	///
 	/// ```rust
 	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<4>::new(true);
 	///
-	/// // Set some bit to zero
-	/// map.set(60, false).unwrap();
-	/// assert_eq!(map.get(60), Some(false));
+	/// // Set some bit to 0
+	/// map.set(60, false, Relaxed).unwrap();
+	/// assert_eq!(map.get(60, Relaxed), Some(false));
 	///
-	/// // Atomically set it to one
-	/// assert_eq!(map.set_lowest_zero(), Some(60));
+	/// // Atomically set it to 1
+	/// assert_eq!(map.set_lowest_zero(Relaxed, Relaxed), Some(60));
 	///
 	/// // No zero bits left
-	/// assert_eq!(map.set_lowest_zero(), None);
+	/// assert_eq!(map.set_lowest_zero(Relaxed, Relaxed), None);
 	/// ```
-	fn set_lowest_zero(&self) -> Option<usize> {
+	fn set_lowest_zero(
+		&self,
+		order_a: Ordering,
+		order_b: Ordering,
+	) -> Option<usize> {
 		for (i, slot) in self.slots().iter().enumerate() {
-			let mut value = slot.load(Ordering::Acquire);
+			let mut value = slot.load(order_a);
 
 			loop {
 				let bit = value.trailing_ones() as usize;
@@ -386,7 +443,7 @@ pub trait AtomicBitmap {
 				let Err(cur) = slot.compare_exchange_weak(
 					value,
 					new,
-					Ordering::SeqCst,
+					order_b,
 					Ordering::Relaxed,
 				) else {
 					// Success, return the set bit
@@ -401,16 +458,25 @@ pub trait AtomicBitmap {
 	}
 
 	/// Similarly to [`AtomicBitmap::set_lowest_zero()`], atomically
-	/// finds the lowest bit set to zero and sets it to one. The main
+	/// finds the lowest bit set to 0 and sets it to 1. The main
 	/// difference is that this function only tries to set an unset
 	/// bit in each slot once, which might skip over unset bits in
 	/// case there is contention on the same slot. This means this
 	/// function has better performance, but it might not find an
 	/// unset bit in some cases (returning [`None`]), or the found
 	/// bit might not be the lowest available.
-	fn set_lowest_zero_weak(&self) -> Option<usize> {
+	///
+	/// `order_a` corresponds to the ordering for the first load of
+	/// the 64-bit block. `order_b` corresponds to the ordering for
+	/// the successful [compare-exchange](AtomicU64::compare_exchange)
+	/// of the block with the bit set.
+	fn set_lowest_zero_weak(
+		&self,
+		order_a: Ordering,
+		order_b: Ordering,
+	) -> Option<usize> {
 		for (i, slot) in self.slots().iter().enumerate() {
-			let value = slot.load(Ordering::Acquire);
+			let value = slot.load(order_a);
 			let bit = value.trailing_ones() as usize;
 			if bit >= SLOT_BITS {
 				continue;
@@ -424,7 +490,7 @@ pub trait AtomicBitmap {
 				.compare_exchange(
 					value,
 					new,
-					Ordering::SeqCst,
+					order_b,
 					Ordering::Relaxed,
 				)
 				.is_ok()
@@ -438,27 +504,30 @@ pub trait AtomicBitmap {
 
 	/// Atomically gets the index of the lowest set bit in the
 	/// bitmap, or [`None`] if all the bits are unset.
-	//
+	///
+	/// `order` specifies the memory ordering when loading each
+	/// 64-bit block.
+	///
 	/// # Example
 	///
 	/// ```rust
 	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<4>::new(false);
-	/// assert_eq!(map.lowest_one(), None);
+	/// assert_eq!(map.lowest_one(Relaxed), None);
 	///
-	/// // Set some bit to one
-	/// map.set(60, true).unwrap();
-	/// assert_eq!(map.lowest_one(), Some(60));
+	/// // Set some bit to 1
+	/// map.set(60, true, Relaxed).unwrap();
+	/// assert_eq!(map.lowest_one(Relaxed), Some(60));
 	///
-	/// // Set a lower bit to one
-	/// map.set(4, true).unwrap();
-	/// assert_eq!(map.lowest_one(), Some(4));
+	/// // Set a lower bit to 1
+	/// map.set(4, true, Relaxed).unwrap();
+	/// assert_eq!(map.lowest_one(Relaxed), Some(4));
 	/// ```
-	fn lowest_one(&self) -> Option<usize> {
+	fn lowest_one(&self, order: Ordering) -> Option<usize> {
 		for (i, slot) in self.slots().iter().enumerate() {
-			let bit = slot.load(Ordering::Acquire).trailing_zeros()
-				as usize;
+			let bit = slot.load(order).trailing_zeros() as usize;
 			if bit < SLOT_BITS {
 				return Some(i * SLOT_BITS + bit);
 			}
@@ -466,30 +535,40 @@ pub trait AtomicBitmap {
 		None
 	}
 
-	/// Atomically finds the lowest bit set to one and sets it to
+	/// Atomically finds the lowest bit set to 1 and sets it to
 	/// zero. Returns the index of that bit, or [`None`] if all the
 	/// bits are unset.
+	///
+	/// `order_a` corresponds to the ordering for the first load of
+	/// the 64-bit block. `order_b` corresponds to the ordering for
+	/// the successful [compare-exchange](AtomicU64::compare_exchange)
+	/// of the block with the bit unset.
 	///
 	/// # Example
 	///
 	/// ```rust
 	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<4>::new(false);
 	///
-	/// // Set some bit to one
-	/// map.set(60, true).unwrap();
-	/// assert_eq!(map.get(60), Some(true));
+	/// // Set some bit to 1
+	/// map.set(60, true, Relaxed).unwrap();
+	/// assert_eq!(map.get(60, Relaxed), Some(true));
 	///
-	/// // Atomically set it to zero
-	/// assert_eq!(map.clear_lowest_one(), Some(60));
+	/// // Atomically set it to 0
+	/// assert_eq!(map.clear_lowest_one(Relaxed, Relaxed), Some(60));
 	///
 	/// // No set bits left
-	/// assert_eq!(map.clear_lowest_one(), None);
+	/// assert_eq!(map.clear_lowest_one(Relaxed, Relaxed), None);
 	/// ```
-	fn clear_lowest_one(&self) -> Option<usize> {
+	fn clear_lowest_one(
+		&self,
+		order_a: Ordering,
+		order_b: Ordering,
+	) -> Option<usize> {
 		for (i, slot) in self.slots().iter().enumerate() {
-			let mut value = slot.load(Ordering::Acquire);
+			let mut value = slot.load(order_a);
 
 			loop {
 				let bit = value.trailing_zeros() as usize;
@@ -502,7 +581,7 @@ pub trait AtomicBitmap {
 				let Err(cur) = slot.compare_exchange_weak(
 					value,
 					new,
-					Ordering::SeqCst,
+					order_b,
 					Ordering::Relaxed,
 				) else {
 					// Success, return the cleared bit
@@ -517,16 +596,25 @@ pub trait AtomicBitmap {
 	}
 
 	/// Similarly to [`AtomicBitmap::clear_lowest_one()`], atomically
-	/// finds the lowest bit set to one and sets it to zero. The main
+	/// finds the lowest bit set to 1 and sets it to 0. The main
 	/// difference is that this function only tries to set a set bit
 	/// in each slot once, which might skip over set bits in case
 	/// there is contention on the same slot. This means this
 	/// function has better performance, but it might not find a set
 	/// bit in some cases (returning [`None`]), or the found bit
 	/// might not be the lowest available.
-	fn clear_lowest_one_weak(&self) -> Option<usize> {
+	///
+	/// `order_a` corresponds to the ordering for the first load of
+	/// the 64-bit block. `order_b` corresponds to the ordering for
+	/// the successful [compare-exchange](AtomicU64::compare_exchange)
+	/// of the block with the bit unset.
+	fn clear_lowest_one_weak(
+		&self,
+		order_a: Ordering,
+		order_b: Ordering,
+	) -> Option<usize> {
 		for (i, slot) in self.slots().iter().enumerate() {
-			let value = slot.load(Ordering::Acquire);
+			let value = slot.load(order_a);
 			let bit = value.trailing_zeros() as usize;
 			if bit >= SLOT_BITS {
 				continue;
@@ -540,7 +628,7 @@ pub trait AtomicBitmap {
 				.compare_exchange(
 					value,
 					new,
-					Ordering::SeqCst,
+					order_b,
 					Ordering::Relaxed,
 				)
 				.is_ok()
@@ -557,26 +645,33 @@ pub trait AtomicBitmap {
 	/// atomically read one at a time, which means changes can happen
 	/// between the load of each 64-bit block.
 	///
+	/// `order` corresponds to the ordering for the load of each block
+	/// when counting set bits.
+	///
 	/// # Example
 	///
 	/// ```rust
 	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<1>::new(true);
-	/// assert_eq!(map.set_bits(), 64);
+	/// assert_eq!(map.set_bits(Relaxed), 64);
 	///
-	/// // Set a single bit to zero.
-	/// map.set(4, false);
-	/// assert_eq!(map.set_bits(), 63);
+	/// // Set a single bit to 0.
+	/// map.set(4, false, Relaxed);
+	/// assert_eq!(map.set_bits(Relaxed), 63);
 	/// ```
-	fn set_bits(&self) -> usize {
+	fn set_bits(&self, order: Ordering) -> usize {
 		self.slots()
 			.iter()
-			.map(|c| c.load(Ordering::Acquire).count_ones() as usize)
+			.map(|c| c.load(order).count_ones() as usize)
 			.sum()
 	}
 
 	/// Reset all bits to the given value.
+	///
+	/// `order` corresponds to the ordering for the store of each
+	/// block.
 	///
 	/// # Safety
 	///
@@ -589,18 +684,19 @@ pub trait AtomicBitmap {
 	/// # Example
 	/// ```rust
 	/// use atomic_bitmap::{AtomicBitmap, FixedBitmap};
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<8>::new(true);
-	/// assert_eq!(map.get(0), Some(true));
+	/// assert_eq!(map.get(0, Relaxed), Some(true));
 	///
 	/// // SAFETY: no concurrent reads or writes are being made.
-	/// unsafe { map.reset(false) };
-	/// assert_eq!(map.get(0), Some(false));
+	/// unsafe { map.reset(false, Relaxed) };
+	/// assert_eq!(map.get(0, Relaxed), Some(false));
 	/// ```
-	unsafe fn reset(&self, val: bool) {
+	unsafe fn reset(&self, val: bool, order: Ordering) {
 		let val = if val { u64::MAX } else { 0 };
 		for slot in self.slots().iter() {
-			slot.store(val, Ordering::Release);
+			slot.store(val, order);
 		}
 	}
 }
@@ -642,6 +738,9 @@ impl<const N: usize> FixedBitmap<N> {
 
 	/// Creates a copy of the bitmap.
 	///
+	/// `order` corresponds to the memory ordering for the load of
+	/// each 64-bit block.
+	///
 	/// # Safety
 	///
 	/// This function is not fully atomic if `N` > 1. If this is the
@@ -655,10 +754,10 @@ impl<const N: usize> FixedBitmap<N> {
 	/// Each 64-bit block is guaranteed to be internally consistent.
 	/// Even when getting an inconsistent view of the bitmap, this
 	/// function does not produce undefined behavior.
-	pub unsafe fn clone(&self) -> Self {
+	pub unsafe fn clone(&self, order: Ordering) -> Self {
 		Self {
 			slots: array::from_fn(|i| {
-				let val = self.slots[i].load(Ordering::SeqCst);
+				let val = self.slots[i].load(order);
 				AtomicU64::new(val)
 			}),
 		}
@@ -666,6 +765,9 @@ impl<const N: usize> FixedBitmap<N> {
 
 	/// Get the bitmap as an array of [`u64`]'s without consuming the
 	/// bitmap.
+	///
+	/// `order` corresponds to the memory ordering for the load of
+	/// each 64-bit block.
 	///
 	/// # Safety
 	///
@@ -683,18 +785,19 @@ impl<const N: usize> FixedBitmap<N> {
 	///
 	/// ```rust
 	/// use atomic_bitmap::FixedBitmap;
+	/// use core::sync::atomic::Ordering::*;
 	///
 	/// let map = FixedBitmap::<8>::new(true);
 	///
 	/// // SAFETY: no concurrent writes are being made.
-	/// let inner = unsafe { map.get_inner() };
+	/// let inner = unsafe { map.get_inner(Relaxed) };
 	/// assert_eq!(inner, [u64::MAX; 8]);
 	///
 	/// // Convert back
 	/// let map = FixedBitmap::from(inner);
 	/// ```
-	pub unsafe fn get_inner(&self) -> [u64; N] {
-		array::from_fn(|i| self.slots[i].load(Ordering::SeqCst))
+	pub unsafe fn get_inner(&self, order: Ordering) -> [u64; N] {
+		array::from_fn(|i| self.slots[i].load(order))
 	}
 
 	/// Get the bitmap as an array of [`u64`]'s, consuming the bitmap.
@@ -731,7 +834,7 @@ impl<const N: usize> FixedBitmap<N> {
 	pub const fn capacity(&self) -> NonZeroUsize {
 		// This is safe because `N` is guaranteed to be greater than
 		// zero at compile time. The multiplication can only wrap
-		// into zero if `N` is a huge number, at which point no system
+		// into 0 if `N` is a huge number, at which point no system
 		// will have the memory to hold such a bitmap.
 		unsafe { NonZeroUsize::new_unchecked(SLOT_BITS * N) }
 	}
@@ -785,7 +888,7 @@ impl<const N: usize> From<FixedBitmap<N>> for [AtomicU64; N] {
 }
 
 impl<const N: usize> Default for FixedBitmap<N> {
-	/// A new bitmap with all bits set to zero.
+	/// A new bitmap with all bits set to 0.
 	fn default() -> Self {
 		Self::new(false)
 	}
@@ -803,59 +906,60 @@ where
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use core::sync::atomic::Ordering::*;
 
 	#[test]
 	fn test_set_get() {
 		let bm = FixedBitmap::<8>::new(false);
-		let prev = bm.set(4, true);
+		let prev = bm.set(4, true, Relaxed);
 		assert_eq!(prev, Some(false));
-		let val = bm.get(4);
+		let val = bm.get(4, Relaxed);
 		assert_eq!(val, Some(true));
 	}
 
 	#[test]
 	fn test_lowest_zero() {
 		let bm = FixedBitmap::<8>::new(true);
-		assert_eq!(bm.lowest_zero(), None);
+		assert_eq!(bm.lowest_zero(Relaxed), None);
 
-		let prev = bm.set(67, false);
+		let prev = bm.set(67, false, Relaxed);
 		assert_eq!(prev, Some(true));
-		assert_eq!(bm.lowest_zero(), Some(67));
+		assert_eq!(bm.lowest_zero(Relaxed), Some(67));
 
-		let prev = bm.set(62, false);
+		let prev = bm.set(62, false, Relaxed);
 		assert_eq!(prev, Some(true));
-		assert_eq!(bm.lowest_zero(), Some(62));
+		assert_eq!(bm.lowest_zero(Relaxed), Some(62));
 
-		let prev = bm.set(62, true);
+		let prev = bm.set(62, true, Relaxed);
 		assert_eq!(prev, Some(false));
-		assert_eq!(bm.lowest_zero(), Some(67));
+		assert_eq!(bm.lowest_zero(Relaxed), Some(67));
 	}
 
 	#[test]
 	fn test_set_lowest_zero() {
 		let bm = FixedBitmap::<8>::new(true);
-		assert_eq!(bm.lowest_zero(), None);
+		assert_eq!(bm.lowest_zero(Relaxed), None);
 
-		let prev = bm.set(67, false);
+		let prev = bm.set(67, false, Relaxed);
 		assert_eq!(prev, Some(true));
-		assert_eq!(bm.lowest_zero(), Some(67));
+		assert_eq!(bm.lowest_zero(Relaxed), Some(67));
 
-		let prev = bm.set(62, false);
+		let prev = bm.set(62, false, Relaxed);
 		assert_eq!(prev, Some(true));
-		assert_eq!(bm.lowest_zero(), Some(62));
+		assert_eq!(bm.lowest_zero(Relaxed), Some(62));
 
-		let prev_lowest = bm.set_lowest_zero();
+		let prev_lowest = bm.set_lowest_zero(Relaxed, Relaxed);
 		assert_eq!(prev_lowest, Some(62));
-		assert_eq!(bm.get(62), Some(true));
+		assert_eq!(bm.get(62, Relaxed), Some(true));
 	}
 
 	#[test]
 	fn test_set_bits() {
 		let bm = FixedBitmap::<8>::new(true);
-		assert_eq!(bm.set_bits(), 8 * 64);
+		assert_eq!(bm.set_bits(Relaxed), 8 * 64);
 
-		bm.set(67, false).unwrap();
-		assert_eq!(bm.set_bits(), 8 * 64 - 1);
+		bm.set(67, false, Relaxed).unwrap();
+		assert_eq!(bm.set_bits(Relaxed), 8 * 64 - 1);
 	}
 
 	#[test]
@@ -871,17 +975,17 @@ mod tests {
 			for _ in 0..NTHREAD {
 				s.spawn(|| {
 					for _ in 0..PERTHREAD {
-						bm.set_lowest_zero();
+						bm.set_lowest_zero(Acquire, SeqCst);
 					}
 				});
 			}
 		});
 
 		for i in 0..NUM_BITS_SET {
-			assert_eq!(bm.get(i), Some(true));
+			assert_eq!(bm.get(i, Relaxed), Some(true));
 		}
 		for i in NUM_BITS_SET..cap {
-			assert_eq!(bm.get(i), Some(false));
+			assert_eq!(bm.get(i, Relaxed), Some(false));
 		}
 	}
 }
