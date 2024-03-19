@@ -754,6 +754,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// Each 64-bit block is guaranteed to be internally consistent.
 	/// Even when getting an inconsistent view of the bitmap, this
 	/// function does not produce undefined behavior.
+	#[inline]
 	pub unsafe fn clone(&self, order: Ordering) -> Self {
 		Self {
 			slots: array::from_fn(|i| {
@@ -796,6 +797,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// // Convert back
 	/// let map = FixedBitmap::from(inner);
 	/// ```
+	#[inline]
 	pub unsafe fn get_inner(&self, order: Ordering) -> [u64; N] {
 		array::from_fn(|i| self.slots[i].load(order))
 	}
@@ -817,6 +819,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// // Convert back
 	/// let map = FixedBitmap::from(inner);
 	/// ```
+	#[inline]
 	pub fn into_inner(self) -> [u64; N] {
 		self.slots.map(|s| s.into_inner())
 	}
@@ -831,6 +834,7 @@ impl<const N: usize> FixedBitmap<N> {
 	/// let map = FixedBitmap::<4>::new(true);
 	/// assert_eq!(map.capacity().get(), 64 * 4);
 	/// ```
+	#[inline]
 	pub const fn capacity(&self) -> NonZeroUsize {
 		// This is safe because `N` is guaranteed to be greater than
 		// zero at compile time. The multiplication can only wrap
@@ -841,12 +845,14 @@ impl<const N: usize> FixedBitmap<N> {
 }
 
 impl<const N: usize> AtomicBitmap for FixedBitmap<N> {
+	#[inline]
 	fn slots(&self) -> &[AtomicU64] {
 		&self.slots
 	}
 }
 
 impl<const N: usize> From<[u64; N]> for FixedBitmap<N> {
+	#[inline]
 	fn from(values: [u64; N]) -> Self {
 		Self {
 			slots: array::from_fn(|i| AtomicU64::new(values[i])),
@@ -855,6 +861,7 @@ impl<const N: usize> From<[u64; N]> for FixedBitmap<N> {
 }
 
 impl<const N: usize> From<&[u64; N]> for FixedBitmap<N> {
+	#[inline]
 	fn from(values: &[u64; N]) -> Self {
 		Self {
 			slots: array::from_fn(|i| AtomicU64::new(values[i])),
@@ -875,6 +882,7 @@ impl<const N: usize> TryFrom<&[u64]> for FixedBitmap<N> {
 
 impl<const N: usize> From<[AtomicU64; N]> for FixedBitmap<N> {
 	/// Construct a bitmap from its interior representation.
+	#[inline]
 	fn from(values: [AtomicU64; N]) -> Self {
 		Self { slots: values }
 	}
@@ -882,6 +890,7 @@ impl<const N: usize> From<[AtomicU64; N]> for FixedBitmap<N> {
 
 impl<const N: usize> From<FixedBitmap<N>> for [AtomicU64; N] {
 	/// Gets the interior representation of the bitmap.
+	#[inline]
 	fn from(bitmap: FixedBitmap<N>) -> Self {
 		bitmap.slots
 	}
@@ -889,6 +898,7 @@ impl<const N: usize> From<FixedBitmap<N>> for [AtomicU64; N] {
 
 impl<const N: usize> Default for FixedBitmap<N> {
 	/// A new bitmap with all bits set to 0.
+	#[inline]
 	fn default() -> Self {
 		Self::new(false)
 	}
@@ -898,6 +908,7 @@ impl<T> AtomicBitmap for T
 where
 	T: AsRef<[AtomicU64]>,
 {
+	#[inline]
 	fn slots(&self) -> &[AtomicU64] {
 		self.as_ref()
 	}
