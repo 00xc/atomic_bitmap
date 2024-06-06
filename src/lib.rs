@@ -104,7 +104,7 @@ pub trait AtomicBitmap {
 	///
 	/// The memory ordering corresponds to that of
 	/// [`fetch_or()`](AtomicU64::fetch_or) and
-	/// [`fetch_and()`]((AtomicU64::fetch_and).
+	/// [`fetch_and()`](AtomicU64::fetch_and).
 	///
 	/// # Example
 	///
